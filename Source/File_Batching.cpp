@@ -1574,6 +1574,9 @@ int BatchExportDialog::ShowModal(int type, SaveSet* datas, wxArrayString objlist
 	datatype = type;
 	sortlist = objlistsort;
 	dataset = datas;
+	m_exportlist->Clear();
+	m_scriptpanel->Hide();
+	m_backgroundpanel->Hide();
 	m_exportlist->Append(objlist);
 	for (i = 0; i < objlist.Count(); i++)
 		m_exportlist->Check(i);
@@ -1589,6 +1592,11 @@ int BatchExportDialog::ShowModal(int type, SaveSet* datas, wxArrayString objlist
 	} else if (type == 300) {
 		m_splitfilepanel->Show(false);
 	}
+	m_exportlist->SetMinSize(FromDIP(wxSize(560, 260)));
+	Layout();
+	GetSizer()->SetSizeHints(this);
+	Fit();
+	CentreOnParent();
 	return wxDialog::ShowModal();
 }
 

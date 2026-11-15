@@ -6,6 +6,7 @@
 #include "Configuration.h"
 #include "Gui_Preferences.h"
 #include "gui.h"
+#include <wx/timer.h>
 
 class CDDataStruct : public CDPanel {
 public:
@@ -182,6 +183,8 @@ public:
 	void CilDisplayNames(bool create = false);
 
 private:
+	// Owned by the panel; wxTimer stops automatically before controls are destroyed.
+	wxTimer workspaceRefreshTimer;
 	uint16_t* scenetex;
 	uint16_t* scenepal;
 	int copyenemystat_battleid;

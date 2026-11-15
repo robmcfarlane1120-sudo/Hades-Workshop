@@ -1,11 +1,13 @@
 // Modified by Cheddarbung - November 2026. Based on Hades Workshop 0.53 by Tirlititi. Distributed under GNU GPL v3.
 
 #include "Gui_Manipulation.h"
+#include "Tool_ModManager.h"
 
 #include <fstream>
 #include <sstream>
 #include <iomanip>
 #include <wx/textdlg.h>
+#include <wx/gbsizer.h>
 #include <wx/mstream.h>
 #include <wx/wfstream.h>
 #include <wx/filedlg.h>
@@ -863,6 +865,11 @@ int IOHWSMessage::ShowModal(bool* sct, bool* scttxt, bool* scton) {
 		m_buttonok->SetLabel(_(HADES_STRING_HWS_OPEN_CONFIRM));
 		UpdateLoadableSection();
 	}
+	if (!save) {
+		m_buttonok->SetDefault();
+		if (m_buttonok->IsEnabled())
+			m_buttonok->SetFocus();
+	}
 	int res = IOHWSWindow::ShowModal();
 	for (i = 0; i < DATA_SECTION_AMOUNT; i++) {
 		section[i] = section_box[i]->GetValue();
@@ -1233,9 +1240,10 @@ void CDDataStruct::MarkDataCardModified() {
 
 void CDDataStruct::MarkDataTextModified(unsigned int textid, Chunk_Type chunktype, unsigned int objectnum) {
 	saveset.sectionmodified[DATA_SECTION_TEXT] = true;
-	if (chunktype == CHUNK_TYPE_TEXT)
+	if (chunktype == CHUNK_TYPE_TEXT) {
 		textset.text_data[textid]->MarkDataModified();
-	else if (chunktype == CHUNK_TYPE_CHARMAP)
+		ToolModManager::SyncTextBlockWorkspace(*this, textid);
+	} else if (chunktype == CHUNK_TYPE_CHARMAP)
 		textset.charmap[textid]->MarkDataModified();
 	else if (chunktype == CHUNK_TYPE_TIM)
 		textset.chartim[textid][objectnum].MarkDataModified();
@@ -6939,6 +6947,7 @@ void CDDataStruct::OnTextBlockRightClick(wxContextMenuEvent&) {
 	MarkDataTextModified(index, CHUNK_TYPE_TEXT);
 	TextDisplayNames();
 	m_fieldtextblock->Append(wxString::Format(L"%lu: ", id) + label);
+	ToolModManager::SyncTextBlockWorkspace(*this, index);
 	for (unsigned int i = 0; i < textset.amount; i++) {
 		if (textsorted[i] != static_cast<unsigned int>(index)) continue;
 		m_textlist->SetSelection(i);
@@ -7277,10 +7286,12 @@ void CDDataStruct::OnFieldChangeButton(wxCommandEvent& event) {
 		TextDataStruct* textobj = fieldset.related_text[*sortid];
 //fstream fout("aaaa.txt",ios::app|ios::out); fout << "Go" << endl; fout.close();
 		ScriptEditDialog dial(this,*sc,SCRIPT_TYPE_FIELD,&saveset,NULL,textobj);
+		dial.SetProjectWorkspace(*this, fieldset.GetIdByIndex(*sortid));
 //fout.open("aaaa.txt",ios::app|ios::out); fout << "Step" << endl; fout.close();
 		if (dial.ShowModal()==wxID_OK) {
 			*sc = dial.script;
 			MarkDataFieldModified(*sortid,CHUNK_TYPE_SCRIPT);
+			ToolModManager::SyncFieldWorkspace(*this, fieldset.GetIdByIndex(*sortid), *sc);
 		}
 /* DEBUG
 wxBitmap walkbmp(10000,10000);
@@ -9690,6 +9701,120 @@ CDDataStruct::CDDataStruct(wxWindow* parent, string fname, ConfigurationSet& cfg
 	fieldtexpreview(wxNullBitmap) {
 	unsigned int i;
 	gametype = GetGameType();
+    // Workspace actions live alongside the native field script controls.
+    auto* workspace = new wxStaticBoxSizer(wxHORIZONTAL, m_fieldscrolledwindow, _("Workspace"));
+    auto* addToWorkspace = new wxButton(workspace->GetStaticBox(), wxID_ANY, _("Add to Workspace"));
+    auto* reviewWorkspace = new wxButton(workspace->GetStaticBox(), wxID_ANY, _("Review Changes"));
+    addToWorkspace->SetFont(m_fieldeditscript->GetFont());
+    reviewWorkspace->SetFont(m_fieldeditscript->GetFont());
+    workspace->GetStaticBox()->SetFont(m_fieldeditscript->GetFont());
+    addToWorkspace->SetToolTip(_("Add this field script and its linked text to the project workspace. Pending external edits are preserved."));
+    reviewWorkspace->SetToolTip(_("Review pending script and text edits in this project's workspace."));
+    addToWorkspace->Enable(false);
+    reviewWorkspace->Enable(false);
+    workspace->Add(addToWorkspace, 0, wxALL, 3);
+    workspace->Add(reviewWorkspace, 0, wxALL, 3);
+    // Give Workspace its own right-hand column spanning Name and Script.
+    // Lower field controls span both value columns, preserving the full preview width.
+    auto* previousGrid = m_fieldscrolledwindow->GetSizer();
+    auto* fieldGrid = new wxGridBagSizer(0, 0);
+    size_t itemIndex = 0;
+    while (previousGrid->GetItemCount()) {
+        auto* item = previousGrid->GetItem(size_t(0));
+        const int row = static_cast<int>(itemIndex / 2);
+        const int column = static_cast<int>(itemIndex % 2);
+        const wxGBPosition position(row, column);
+        const wxGBSpan span(1, row >= 2 && column == 1 ? 2 : 1);
+        const int flags = item->GetFlag();
+        const int border = item->GetBorder();
+        auto* window = item->GetWindow();
+        auto* sizer = item->GetSizer();
+        const auto spacer = item->IsSpacer() ? item->GetSpacer() : wxSize();
+        previousGrid->Detach(0);
+        if (window)
+            fieldGrid->Add(window, position, span, flags, border);
+        else if (sizer)
+            fieldGrid->Add(sizer, position, span, flags, border);
+        else
+            fieldGrid->Add(spacer.x, spacer.y, position, span, flags, border);
+        ++itemIndex;
+    }
+    fieldGrid->Add(workspace, wxGBPosition(0, 2), wxGBSpan(2, 1), wxLEFT | wxALIGN_TOP, 10);
+    fieldGrid->AddGrowableCol(1);
+    fieldGrid->AddGrowableRow(5);
+    m_fieldscrolledwindow->SetSizer(fieldGrid);
+    const auto canAddField = [this]() {
+        if (gametype != GAME_TYPE_STEAM || projectFilename.empty() || !saveset.sectionloaded[DATA_SECTION_FIELD])
+            return false;
+        const int selection = m_fieldlist->GetSelection();
+        if (selection == wxNOT_FOUND)
+            return false;
+        const auto* index = static_cast<const unsigned int*>(m_fieldlist->GetClientData(selection));
+        return index && *index < fieldset.amount && fieldset.script_data[*index];
+    };
+    addToWorkspace->Bind(wxEVT_UPDATE_UI, [canAddField](wxUpdateUIEvent& event) {
+        event.Enable(canAddField());
+    });
+    addToWorkspace->Bind(wxEVT_BUTTON, [this, canAddField](wxCommandEvent&) {
+        if (!canAddField())
+            return;
+        const auto index = *static_cast<const unsigned int*>(m_fieldlist->GetClientData(m_fieldlist->GetSelection()));
+        if (ToolModManager::SyncFieldWorkspace(*this, fieldset.GetIdByIndex(index), *fieldset.script_data[index], this))
+            wxMessageBox(_("Field script and linked text added to the workspace."), _("Project Workspace"), wxOK | wxICON_INFORMATION, this);
+    });
+    auto* textWorkspace = new wxStaticBoxSizer(wxHORIZONTAL, m_textscrolledwindow, _("Workspace"));
+    auto* addTextWorkspace = new wxButton(textWorkspace->GetStaticBox(), wxID_ANY, _("Add to Workspace"));
+    auto* reviewTextWorkspace = new wxButton(textWorkspace->GetStaticBox(), wxID_ANY, _("Review Changes"));
+    textWorkspace->GetStaticBox()->SetFont(m_textexport->GetFont());
+    for (auto* button : {addTextWorkspace, reviewTextWorkspace}) {
+        button->SetFont(m_textexport->GetFont());
+        button->Enable(false);
+        textWorkspace->Add(button, 0, wxALL, 3);
+    }
+    addTextWorkspace->SetToolTip(_("Add the selected text block to the workspace. Pending external edits are preserved."));
+    reviewTextWorkspace->SetToolTip(_("Review pending script and text edits in this project's workspace."));
+    m_textuniversalid->GetContainingSizer()->Insert(3, textWorkspace, 0, wxLEFT | wxALIGN_CENTER_VERTICAL, FromDIP(12));
+    const auto canAddText = [this]() {
+        if (gametype != GAME_TYPE_STEAM || projectFilename.empty() || !saveset.sectionloaded[DATA_SECTION_TEXT])
+            return false;
+        const int selection = m_textlist->GetSelection();
+        if (selection == wxNOT_FOUND)
+            return false;
+        const auto* index = static_cast<const unsigned int*>(m_textlist->GetClientData(selection));
+        return index && *index < textset.amount && textset.text_data[*index];
+    };
+    addTextWorkspace->Bind(wxEVT_UPDATE_UI, [canAddText](wxUpdateUIEvent& event) {
+        event.Enable(canAddText());
+    });
+    addTextWorkspace->Bind(wxEVT_BUTTON, [this, canAddText](wxCommandEvent&) {
+        if (!canAddText())
+            return;
+        const auto index = *static_cast<const unsigned int*>(m_textlist->GetClientData(m_textlist->GetSelection()));
+        if (ToolModManager::SyncTextBlockWorkspace(*this, index, this))
+            wxMessageBox(_("Text block added to the workspace."), _("Project Workspace"), wxOK | wxICON_INFORMATION, this);
+    });
+    reviewTextWorkspace->Bind(wxEVT_BUTTON, [this, reviewTextWorkspace](wxCommandEvent&) {
+        ToolModManager::ReviewWorkspace(*this, this);
+        reviewTextWorkspace->Enable(ToolModManager::HasPendingWorkspaceChanges(*this));
+    });
+    // A disk edit does not generate a wx idle event. Poll explicitly so the button
+    // updates even when the user has not moved the mouse or restarted HWS.
+    workspaceRefreshTimer.SetOwner(this);
+    Bind(wxEVT_TIMER, [this, addToWorkspace, reviewWorkspace, canAddField, addTextWorkspace, reviewTextWorkspace, canAddText](wxTimerEvent&) {
+        if (!IsEnabled() || (!reviewWorkspace->IsShownOnScreen() && !reviewTextWorkspace->IsShownOnScreen()))
+            return;
+        addToWorkspace->Enable(canAddField());
+        addTextWorkspace->Enable(canAddText());
+        const bool ready = gametype == GAME_TYPE_STEAM && !projectFilename.empty();
+        const bool pending = ready && ToolModManager::HasPendingWorkspaceChanges(*this);
+        reviewWorkspace->Enable(pending);
+        reviewTextWorkspace->Enable(pending);
+    }, workspaceRefreshTimer.GetId());
+    workspaceRefreshTimer.Start(1000);
+    reviewWorkspace->Bind(wxEVT_BUTTON, [this, reviewWorkspace](wxCommandEvent&) {
+        ToolModManager::ReviewWorkspace(*this, this);
+        reviewWorkspace->Enable(ToolModManager::HasPendingWorkspaceChanges(*this));
+    });
 	if (gametype == GAME_TYPE_STEAM) {
 		wxButton* previewButton = new wxButton(m_fieldcamera->GetParent(), wxID_ANY, _("Change Preview"));
 		m_fieldcamera->GetContainingSizer()->Add(previewButton, 0, wxALL, 2);

@@ -122,6 +122,13 @@ bool MainApp::OnInit() {
 		return false;
 	}
 
+	// GUI runtime resources and diagnostic files belong beside this executable.
+	// Keep command-mode relative input/output paths relative to its caller.
+	if (!wxSetWorkingDirectory(wxFileName(wxStandardPaths::Get().GetExecutablePath()).GetPath())) {
+		wxLogError("Could not select the Hades Workshop runtime directory.");
+		return false;
+	}
+	ToolModManager::CreateWorkspaceRoot();
 	SetTopWindow(new MainFrame(NULL));
 	GetTopWindow()->Show();
 	wxToolTip::SetAutoPop(60000); // TODO: doesn't seem to have any effect...
@@ -412,6 +419,7 @@ void MainFrame::ImportProject(const wxString& path, bool* sections, bool* text, 
 		RememberProjectFolder(path);
 		wxFileConfig settings(wxEmptyString, wxEmptyString, SessionSettingsPath(), wxEmptyString, wxCONFIG_USE_LOCAL_FILE);
 		settings.Write("LastOpenedProject", path);
+		ToolModManager::SyncProjectWorkspace(*CDPanel[panel]);
 	}
 	wxMessageDialog message(this, _(result[0]), _(result[1]), wxOK | wxCENTRE);
 	message.ShowModal();
@@ -507,6 +515,7 @@ void MainFrame::OnSaveHWSClick(wxCommandEvent& event) {
 		} else {
 			CDPanel[currentpanel]->projectFilename = path;
 			RememberProjectFolder(path);
+			ToolModManager::SyncProjectWorkspace(*CDPanel[currentpanel]);
 			wxMessageDialog popupsuccess(this, HADES_STRING_HWS_SAVE_SUCCESS, HADES_STRING_SUCCESS, wxOK | wxCENTRE);
 			popupsuccess.ShowModal();
 			if (CDModifiedState[currentpanel]) {
@@ -523,6 +532,12 @@ class SaveSteamDialog : public SaveSteamWindow {
 public:
 	SaveSteamDialog(wxWindow* parent) : SaveSteamWindow(parent) {
 		m_customFieldScriptsOnly = new wxCheckBox(this, wxID_ANY, _("Export custom field scripts only"));
+		m_customFieldScriptsOnly->SetFont(m_staticText399->GetFont());
+		m_customFieldScriptsOnly->SetMinSize(wxSize(-1, m_customFieldScriptsOnly->GetBestSize().y + FromDIP(10)));
+		m_staticText3051->SetForegroundColour(wxColour(90, 220, 240));
+		m_staticText3051->Wrap(FromDIP(520));
+		m_infotext->Wrap(FromDIP(520));
+		m_dirpicker->SetMinSize(FromDIP(wxSize(560, -1)));
 		m_customFieldScriptsOnly->SetToolTip(_("Raw Assets only. Export custom field scripts and registrations without replacing existing background, walkmesh, or SPS assets."));
 		wxSizer* options = m_infotext->GetContainingSizer();
 		options->Insert(3, m_customFieldScriptsOnly, 0, wxALL, 5);
@@ -540,10 +555,15 @@ public:
 		m_showinfobtn->SetBitmap(wxBitmap(wxBITMAP(bulletright_image).ConvertToImage()));
 		m_customFieldScriptsOnly->Enable(m_assetformat->GetSelection() == 1);
 		Fit();
-		static bool scriptsOnly = false;
+		wxFileConfig settings(wxEmptyString, wxEmptyString, SessionSettingsPath(), wxEmptyString, wxCONFIG_USE_LOCAL_FILE);
+		bool scriptsOnly = false;
+		settings.Read("ExportCustomFieldScriptsOnly", &scriptsOnly, false);
 		m_customFieldScriptsOnly->SetValue(scriptsOnly);
+		m_buttonok->SetDefault();
+		m_buttonok->SetFocus();
 		int result = SaveSteamWindow::ShowModal();
-		scriptsOnly = m_customFieldScriptsOnly->GetValue();
+		settings.Write("ExportCustomFieldScriptsOnly", m_customFieldScriptsOnly->GetValue());
+		settings.Flush();
 		return result;
 	}
 
@@ -590,6 +610,8 @@ void MainFrame::OnSaveSteamClick(wxCommandEvent& event) {
 			wxFileName::Mkdir(SteamSaveDir.GetPath() + _(L"\\x64\\FF9_Data\\"), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL);
 		}
 		int res = CreateSteamMod(SteamSaveDir.GetPath().ToStdString(), modifiedsection, CDPanel[currentpanel]->config, CDPanel[currentpanel]->saveset, dllformat, assetformat, deleteold, dial.CustomFieldScriptsOnly());
+		if (res == 0 || res == -1)
+			ToolModManager::SyncProjectWorkspace(*CDPanel[currentpanel]);
 		if (res == 0) {
 			wxMessageDialog popupsuccess(this, HADES_STRING_STEAM_SAVE_SUCCESS, HADES_STRING_SUCCESS, wxOK | wxCENTRE);
 			popupsuccess.ShowModal();
@@ -865,6 +887,7 @@ void MainFrame::OnBatchImportClick(wxCommandEvent& event) {
 				CDPanel[currentpanel]->UpdateTextDisplays(*section);
 			CDPanel[currentpanel]->DisplayCurrentData();
 			MarkDataModified();
+			ToolModManager::SyncProjectWorkspace(*CDPanel[currentpanel]);
 		}
 	} else if (id == wxID_IMPENMYSCRIPT) {
 		BatchImportDialog dial(this);
@@ -886,6 +909,7 @@ void MainFrame::OnBatchImportClick(wxCommandEvent& event) {
 		if (dial.datamodified) {
 			CDPanel[currentpanel]->saveset.sectionmodified[DATA_SECTION_FIELD] = true;
 			MarkDataModified();
+			ToolModManager::SyncProjectWorkspace(*CDPanel[currentpanel]);
 		}
 	}
 }
